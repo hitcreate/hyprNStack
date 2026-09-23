@@ -51,3 +51,21 @@ and the whole installed include tree. Need 0.56 replacement (layout/target navig
 4. Trial: enable on ONE workspace via `layoutopt:nstack-*`, instant rollback.
 5. Record CHG; register in CMDB; carry in `omarchy-custom` manifest; add a
    rebuild-check because every Hyprland bump breaks the .so.
+
+## Runtime finding (not caught by the compiler)
+
+The first "compiles clean" port still **SEGV'd the moment a window mapped**:
+`applyWorkspaceLayoutOptions` dereferenced a null pointer from
+`HyprlandAPI::getConfigValue(...)->getDataStaticPtr()`.
+
+Cause: on 0.56, `addConfigValue`/`getConfigValue` are `[[deprecated]]` and **no
+longer register plugin config values** — so `getConfigValue` returns nullptr.
+`hyprctl getoption plugin:nstack:layout:*` said "no such option".
+
+Fix: register every value with `addConfigValueV2(PHANDLE, SP<Config::Values::IValue>)`
+(`CStringValue`/`CIntValue`/`CFloatValue`) kept in `globals.hpp`, and read via
+`->value()`. Versions compile either way — only a runtime/containment test catches this.
+
+Verified by `tests/containment.py` in a nested Hyprland instance (CONTAINMENT_PASS):
+load, register, activate `nStack`, master+stack tiling, `setstackcount 3` -> 3 columns,
+no crash, parent session untouched.
