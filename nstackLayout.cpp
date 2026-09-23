@@ -11,19 +11,116 @@
 #include <hyprland/src/config/ConfigValue.hpp>
 #include <hyprland/src/helpers/MiscFunctions.hpp>
 #include <hyprland/src/config/ConfigManager.hpp>
+#include <hyprland/src/config/shared/workspace/WorkspaceRuleManager.hpp>
 #include <hyprland/src/layout/target/WindowTarget.hpp>
 #include <hyprland/src/render/decorations/CHyprGroupBarDecoration.hpp>
 #include <hyprland/src/render/decorations/IHyprWindowDecoration.hpp>
 #include <hyprutils/cli/Logger.hpp>
 #include <hyprutils/utils/ScopeGuard.hpp>
 #include <hyprland/src/render/Renderer.hpp>
+#include <hyprland/src/managers/fullscreen/FullscreenController.hpp>
+#include <hyprland/src/desktop/state/WindowState.hpp>
+#include <hyprland/src/state/MonitorState.hpp>
+#include <hyprland/src/pointer/PointerController.hpp>
+#include <hyprutils/string/String.hpp>
 #include <format>
+#include <map>
 
 
 
 
 using namespace Layout;
 using namespace Layout::Tiled;
+
+// Hyprland 0.56 removed the public configStringToInt() helper (present in 0.54).
+// Ported verbatim from v0.54.0 src/helpers/MiscFunctions.cpp so layoutopt parsing
+// keeps identical semantics.
+static std::expected<int64_t, std::string> configStringToInt(const std::string& VALUE) {
+    auto parseHex = [](const std::string& value) -> std::expected<int64_t, std::string> {
+        try {
+            size_t position;
+            auto   result = std::stoll(value, &position, 16);
+            if (position == value.size())
+                return result;
+        } catch (const std::exception&) {}
+        return std::unexpected("invalid hex " + value);
+    };
+    if (VALUE.starts_with("0x")) {
+        // Values with 0x are hex
+        return parseHex(VALUE);
+    } else if (VALUE.starts_with("rgba(") && VALUE.ends_with(')')) {
+        const auto VALUEWITHOUTFUNC = Hyprutils::String::trim(VALUE.substr(5, VALUE.length() - 6));
+
+        // try doing it the comma way first
+        if (std::ranges::count(VALUEWITHOUTFUNC, ',') == 3) {
+            // cool
+            std::string rolling = VALUEWITHOUTFUNC;
+            auto        r       = configStringToInt(Hyprutils::String::trim(rolling.substr(0, rolling.find(','))));
+            rolling             = rolling.substr(rolling.find(',') + 1);
+            auto g              = configStringToInt(Hyprutils::String::trim(rolling.substr(0, rolling.find(','))));
+            rolling             = rolling.substr(rolling.find(',') + 1);
+            auto b              = configStringToInt(Hyprutils::String::trim(rolling.substr(0, rolling.find(','))));
+            rolling             = rolling.substr(rolling.find(',') + 1);
+            uint8_t a           = 0;
+
+            if (!r || !g || !b)
+                return std::unexpected("failed parsing " + VALUEWITHOUTFUNC);
+
+            try {
+                a = std::round(std::stof(Hyprutils::String::trim(rolling.substr(0, rolling.find(',')))) * 255.f);
+            } catch (std::exception& e) { return std::unexpected("failed parsing " + VALUEWITHOUTFUNC); }
+
+            return a * sc<Hyprlang::INT>(0x1000000) + *r * sc<Hyprlang::INT>(0x10000) + *g * sc<Hyprlang::INT>(0x100) + *b;
+        } else if (VALUEWITHOUTFUNC.length() == 8) {
+            const auto RGBA = parseHex(VALUEWITHOUTFUNC);
+
+            if (!RGBA)
+                return RGBA;
+            // now we need to RGBA -> ARGB. The config holds ARGB only.
+            return (*RGBA >> 8) + 0x1000000 * (*RGBA & 0xFF);
+        }
+
+        return std::unexpected("rgba() expects length of 8 characters (4 bytes) or 4 comma separated values");
+
+    } else if (VALUE.starts_with("rgb(") && VALUE.ends_with(')')) {
+        const auto VALUEWITHOUTFUNC = Hyprutils::String::trim(VALUE.substr(4, VALUE.length() - 5));
+
+        // try doing it the comma way first
+        if (std::ranges::count(VALUEWITHOUTFUNC, ',') == 2) {
+            // cool
+            std::string rolling = VALUEWITHOUTFUNC;
+            auto        r       = configStringToInt(Hyprutils::String::trim(rolling.substr(0, rolling.find(','))));
+            rolling             = rolling.substr(rolling.find(',') + 1);
+            auto g              = configStringToInt(Hyprutils::String::trim(rolling.substr(0, rolling.find(','))));
+            rolling             = rolling.substr(rolling.find(',') + 1);
+            auto b              = configStringToInt(Hyprutils::String::trim(rolling.substr(0, rolling.find(','))));
+
+            if (!r || !g || !b)
+                return std::unexpected("failed parsing " + VALUEWITHOUTFUNC);
+
+            return sc<Hyprlang::INT>(0xFF000000) + *r * sc<Hyprlang::INT>(0x10000) + *g * sc<Hyprlang::INT>(0x100) + *b;
+        } else if (VALUEWITHOUTFUNC.length() == 6) {
+            auto r = parseHex(VALUEWITHOUTFUNC);
+            return r ? *r + 0xFF000000 : r;
+        }
+
+        return std::unexpected("rgb() expects length of 6 characters (3 bytes) or 3 comma separated values");
+    } else if (VALUE.starts_with("true") || VALUE.starts_with("on") || VALUE.starts_with("yes")) {
+        return 1;
+    } else if (VALUE.starts_with("false") || VALUE.starts_with("off") || VALUE.starts_with("no")) {
+        return 0;
+    }
+
+    if (VALUE.empty() || !Hyprutils::String::isNumber(VALUE, false))
+        return std::unexpected("cannot parse \"" + VALUE + "\" as an int.");
+
+    try {
+        const auto RES = std::stoll(VALUE);
+        return RES;
+    } catch (std::exception& e) { return std::unexpected(std::string{"stoll threw: "} + e.what()); }
+
+    return std::unexpected("parse error");
+}
 
 SP<SNstackNodeData> CHyprNstackAlgorithm::getNodeFromTarget(SP<ITarget> x) {
     for (auto& nd : m_lMasterNodesData) {
@@ -49,8 +146,8 @@ int CHyprNstackAlgorithm::getMastersCount() {
 
 void CHyprNstackAlgorithm::applyWorkspaceLayoutOptions() {
 
-    const auto         wsrule       = g_pConfigManager->getWorkspaceRuleFor(m_parent->space()->workspace());
-    const auto         wslayoutopts = wsrule.layoutopts;
+    const auto         wsrule       = Config::workspaceRuleMgr()->getWorkspaceRuleFor(m_parent->space()->workspace());
+    const auto         wslayoutopts = wsrule ? wsrule->m_layoutopts : std::map<std::string, std::string>{};
 
     static auto* const orientation   = (Hyprlang::STRING const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:orientation")->getDataStaticPtr();
     std::string        wsorientation = *orientation;
@@ -247,7 +344,7 @@ void CHyprNstackAlgorithm::addTarget(SP<ITarget> target, bool firstMap) {
 }
 
 
-void CHyprNstackAlgorithm::recalculate() {
+void CHyprNstackAlgorithm::recalculate(eRecalculateReason reason) {
 	calculateWorkspace();
 }
 
@@ -699,8 +796,8 @@ void CHyprNstackAlgorithm::removeTarget(SP<ITarget> target) {
     if (!PNODE)
         return;
 
-    if (target->fullscreenMode() != FSMODE_NONE)
-        g_pCompositor->setWindowFullscreenInternal(target->window(), FSMODE_NONE);
+    if (Fullscreen::controller()->isFullscreen(target->window()))
+        Fullscreen::controller()->setFullscreenMode(target->window(), Fullscreen::FSMODE_NONE);
 
     const auto MASTERSLEFT = getMastersCount();
 
@@ -794,9 +891,9 @@ SP<SNstackNodeData> CHyprNstackAlgorithm::getClosestNode(const Vector2D& point) 
     return res;
 }
 void CHyprNstackAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection dir, bool silent) {
-    static auto PMONITORFALLBACK = CConfigValue<Hyprlang::INT>("binds:window_direction_monitor_fallback");
+    static auto PMONITORFALLBACK = CConfigValue<Config::INTEGER>("binds:window_direction_monitor_fallback");
 
-    const auto  PWINDOW2 = g_pCompositor->getWindowInDirection(t->window(), dir);
+    const auto  PWINDOW2 = Desktop::windowState()->query().inDirection(t->window(), dir);
 
     if (!t->window())
         return;
@@ -805,7 +902,7 @@ void CHyprNstackAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection
 
     if (!PWINDOW2 && t->space() && t->space()->workspace()) {
         // try to find a monitor in dir
-        const auto PMONINDIR = g_pCompositor->getMonitorInDirection(t->space()->workspace()->m_monitor.lock(), dir);
+        const auto PMONINDIR = State::monitorState()->query().relativeTo(t->space()->workspace()->m_monitor.lock()).inDirection(dir).run();
         if (PMONINDIR)
             targetWs = PMONINDIR->m_activeWorkspace;
     } else
@@ -831,25 +928,29 @@ void CHyprNstackAlgorithm::moveTargetInDirection(SP<ITarget> t, Math::eDirection
     }
 }
 
-std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::string_view& sv) {
+Config::ErrorResult CHyprNstackAlgorithm::layoutMsg(const std::string_view& sv) {
 
     auto switchToWindow = [&](SP<ITarget> target) {
         if (!target || !validMapped(target->window()))
             return;
 
         Desktop::focusState()->fullWindowFocus(target->window(), Desktop::FOCUS_REASON_KEYBIND);
-        g_pCompositor->warpCursorTo(target->position().middle());
+        Pointer::pointerController()->warpTo(target->position().middle());
 
         g_pInputManager->m_forcedFocus = target->window(); 
         g_pInputManager->simulateMouseMovement();
         g_pInputManager->m_forcedFocus.reset();
     };
 
-    CVarList2 vars(std::string{sv}, 0, 's');
+    const auto invalidArg = [](std::string msg) { return Config::configError(std::move(msg), Config::eConfigErrorLevel::ERROR, Config::eConfigErrorCode::INVALID_ARGUMENT); };
+    const auto noTarget   = [](std::string msg) { return Config::configError(std::move(msg), Config::eConfigErrorLevel::WARNING, Config::eConfigErrorCode::NO_TARGET); };
+    const auto stateErr   = [](std::string msg) { return Config::configError(std::move(msg), Config::eConfigErrorLevel::WARNING, Config::eConfigErrorCode::INVALID_STATE); };
+
+    Hyprutils::String::CVarList2 vars(std::string{sv}, 0, 's');
 
     if (vars.size() < 1 || vars[0].empty()) {
         Log::logger->log(Log::ERR, "layoutmsg called without params");
-        return std::unexpected("layoutmsg without params"); 
+        return invalidArg("layoutmsg without params"); 
     }
 
     auto command = vars[0];
@@ -864,15 +965,15 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
     if (command == "swapwithmaster") {
 
         if (!PWINDOW)
-            return std::unexpected("No focused window");
+            return noTarget("No focused window");
 
         if (!isWindowTiled(PWINDOW))
-            return std::unexpected("focused window isn't tiled");
+            return stateErr("focused window isn't tiled");
 
         const auto PMASTER = getMasterNode();
 
         if (!PMASTER)
-            return std::unexpected("no master node");
+            return noTarget("no master node");
 
         const auto NEWCHILD = PMASTER->pTarget.lock();
 
@@ -904,12 +1005,12 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
     else if (command == "focusmaster") {
 
         if (!PWINDOW)
-            return std::unexpected("no focused window");
+            return noTarget("no focused window");
 
         const auto PMASTER = getMasterNode();
 
         if (!PMASTER)
-            return std::unexpected("no master");
+            return noTarget("no master");
 
         if (PMASTER->pTarget.lock() != PWINDOW->layoutTarget()) {
             switchToWindow(PMASTER->pTarget.lock());
@@ -929,7 +1030,7 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
     } else if (command == "cyclenext") {
 
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
 
 		    const bool NOLOOP = vars.size() >= 2 && vars[1] == "noloop";
         const auto PNEXTWINDOW = getNextTarget(PWINDOW->layoutTarget(), true, !NOLOOP);
@@ -937,14 +1038,14 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
     } else if (command == "cycleprev") {
 
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
 
 		    const bool NOLOOP = vars.size() >= 2 && vars[1] == "noloop";
         const auto PPREVWINDOW = getNextTarget(PWINDOW->layoutTarget(), false, !NOLOOP);
         switchToWindow(PPREVWINDOW);
     } else if (command == "swapnext") {
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating()) {
             g_pKeybindManager->m_dispatchers["swapnext"]("");
@@ -955,13 +1056,13 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
         const auto PWINDOWTOSWAPWITH = getNextTarget(PWINDOW->layoutTarget(), true, !NOLOOP);
 
         if (PWINDOWTOSWAPWITH) {
-						g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
+						Fullscreen::controller()->setFullscreenMode(PWINDOW, Fullscreen::FSMODE_NONE);
 						g_layoutManager->switchTargets(PWINDOW->layoutTarget(), PWINDOWTOSWAPWITH);
 						switchToWindow(PWINDOW->layoutTarget());
         }
     } else if (command == "swapprev") {
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating()) {
             g_pKeybindManager->m_dispatchers["swapnext"]("");
@@ -972,16 +1073,16 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
         const auto PWINDOWTOSWAPWITH = getNextTarget(PWINDOW->layoutTarget(), true, !NOLOOP);
 
         if (PWINDOWTOSWAPWITH) {
-						g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
+						Fullscreen::controller()->setFullscreenMode(PWINDOW, Fullscreen::FSMODE_NONE);
 						g_layoutManager->switchTargets(PWINDOW->layoutTarget(), PWINDOWTOSWAPWITH);
 						switchToWindow(PWINDOW->layoutTarget());
         }
     } else if (command == "addmaster") {
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating())
-            return std::unexpected("window is floating");
+            return stateErr("window is floating");
 
         const auto PNODE = getNodeFromTarget(PWINDOW->layoutTarget());
 
@@ -1002,10 +1103,10 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
     } else if (command == "removemaster") {
 
         if (!validMapped(PWINDOW))
-            return std::unexpected("no window");
+            return noTarget("no window");
 
         if (PWINDOW->layoutTarget()->floating())
-            return std::unexpected("window isn't tiled");
+            return stateErr("window isn't tiled");
 
         const auto PNODE = getNodeFromTarget(PWINDOW->layoutTarget());
 
@@ -1013,7 +1114,7 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
         const auto MASTERS = getMastersCount();
 
         if (WINDOWS < 2 || MASTERS < 2)
-            return std::unexpected("nothing to do");
+            return stateErr("nothing to do");
 
         if (!PNODE || !PNODE->isMaster) {
             // first non-master node
@@ -1032,10 +1133,10 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
                command == "orientationhcenter" || command == "orientationvcenter") {
 
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
 
 
-		    g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
+		    Fullscreen::controller()->setFullscreenMode(PWINDOW, Fullscreen::FSMODE_NONE);
         if (command == "orientationleft")
             m_userWorkspaceData.orientation = NSTACK_ORIENTATION_LEFT;
         else if (command == "orientationright")
@@ -1059,20 +1160,20 @@ std::expected<void, std::string> CHyprNstackAlgorithm::layoutMsg(const std::stri
         runOrientationCycle(&vars, 1);
     } else if (command == "resetsplits") {
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
         resetNodeSplits();
   	} else if (command == "mfact") {
 		   const bool exact = vars[1] == "exact";
 			 float ratio = 0.F;
 		   try {
-         ratio = std::stof(std::string{exact ? vars[2] : vars[1]});
-   		} catch (...) { return std::unexpected("bad ratio");}
+         ratio = std::stof(std::string(exact ? std::string(vars[2]) : std::string(vars[1])));
+   		} catch (...) { return invalidArg("bad ratio");}
 		  float newRatio = exact ? ratio : m_userWorkspaceData.master_factor.value_or(m_workspaceData.master_factor) + ratio;
 		  m_userWorkspaceData.master_factor = std::clamp(newRatio, 0.05f, 0.95f);
 		  recalculate();
     } else if (command == "setstackcount") {
         if (!PWINDOW)
-            return std::unexpected("no window");
+            return noTarget("no window");
         if (vars.size() >= 2) {
             int newStackCount = 2;
             switch (vars[1][0]) {
@@ -1108,7 +1209,7 @@ void CHyprNstackAlgorithm::runOrientationCycle(Hyprutils::String::CVarList2* var
         return;
 
 
-	  g_pCompositor->setWindowFullscreenInternal(PWINDOW, FSMODE_NONE);
+	  Fullscreen::controller()->setFullscreenMode(PWINDOW, Fullscreen::FSMODE_NONE);
 
 	  current_orientation = m_userWorkspaceData.orientation.value_or(m_workspaceData.orientation);
     int        nextOrPrev = 0;
