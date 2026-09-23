@@ -149,8 +149,9 @@ void CHyprNstackAlgorithm::applyWorkspaceLayoutOptions() {
     const auto         wsrule       = Config::workspaceRuleMgr()->getWorkspaceRuleFor(m_parent->space()->workspace());
     const auto         wslayoutopts = wsrule ? wsrule->m_layoutopts : std::map<std::string, std::string>{};
 
-    static auto* const orientation   = (Hyprlang::STRING const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:orientation")->getDataStaticPtr();
-    std::string        wsorientation = *orientation;
+    if (!g_pCfgOrientation)
+        return;
+    std::string        wsorientation = g_pCfgOrientation->value();
 
     if (wslayoutopts.contains("nstack-orientation"))
         wsorientation = wslayoutopts.at("nstack-orientation");
@@ -171,8 +172,7 @@ void CHyprNstackAlgorithm::applyWorkspaceLayoutOptions() {
         m_workspaceData.orientation = NSTACK_ORIENTATION_HCENTER;
     }
 
-    static auto* const NUMSTACKS = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:stacks")->getDataStaticPtr();
-    auto               wsstacks  = **NUMSTACKS;
+    auto               wsstacks  = g_pCfgStacks->value();
 
     if (wslayoutopts.contains("nstack-stacks")) {
         try {
@@ -184,8 +184,7 @@ void CHyprNstackAlgorithm::applyWorkspaceLayoutOptions() {
         m_workspaceData.m_iStackCount = wsstacks;
     }
 
-    static auto* const MFACT   = (Hyprlang::FLOAT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:mfact")->getDataStaticPtr();
-    auto               wsmfact = **MFACT;
+    auto               wsmfact = g_pCfgMfact->value();
     if (wslayoutopts.contains("nstack-mfact")) {
         std::string mfactstr = wslayoutopts.at("nstack-mfact");
         try {
@@ -194,8 +193,7 @@ void CHyprNstackAlgorithm::applyWorkspaceLayoutOptions() {
     }
     m_workspaceData.master_factor = wsmfact;
 
-    static auto* const SMFACT   = (Hyprlang::FLOAT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:single_mfact")->getDataStaticPtr();
-    auto               wssmfact = **SMFACT;
+    auto               wssmfact = g_pCfgSingleMfact->value();
 
     if (wslayoutopts.contains("nstack-single_mfact")) {
         std::string smfactstr = wslayoutopts.at("nstack-single_mfact");
@@ -205,8 +203,7 @@ void CHyprNstackAlgorithm::applyWorkspaceLayoutOptions() {
     }
     m_workspaceData.single_master_factor = wssmfact;
 
-    static auto* const SSFACT   = (Hyprlang::FLOAT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:special_scale_factor")->getDataStaticPtr();
-    auto               wsssfact = **SSFACT;
+    auto               wsssfact = g_pCfgSpecialScaleFactor->value();
     if (wslayoutopts.contains("nstack-special_scale_factor")) {
         std::string ssfactstr = wslayoutopts.at("nstack-special_scale_factor");
         try {
@@ -215,32 +212,27 @@ void CHyprNstackAlgorithm::applyWorkspaceLayoutOptions() {
     }
     m_workspaceData.special_scale_factor = wsssfact;
 
-    static auto* const NEWTOP   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:new_on_top")->getDataStaticPtr();
-    auto               wsnewtop = **NEWTOP;
+    auto               wsnewtop = g_pCfgNewOnTop->value();
     if (wslayoutopts.contains("nstack-new_on_top"))
         wsnewtop = configStringToInt(wslayoutopts.at("nstack-new_on_top")).value_or(0);
     m_workspaceData.new_on_top = wsnewtop;
 
-    static auto* const NEWMASTER   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:new_is_master")->getDataStaticPtr();
-    auto               wsnewmaster = **NEWMASTER;
+    auto               wsnewmaster = g_pCfgNewIsMaster->value();
     if (wslayoutopts.contains("nstack-new_is_master"))
         wsnewmaster = configStringToInt(wslayoutopts.at("nstack-new_is_master")).value_or(0);
     m_workspaceData.new_is_master = wsnewmaster;
 
-    static auto* const NGWO   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:no_gaps_when_only")->getDataStaticPtr();
-    auto               wsngwo = **NGWO;
+    auto               wsngwo = g_pCfgNoGapsWhenOnly->value();
     if (wslayoutopts.contains("nstack-no_gaps_when_only"))
         wsngwo = configStringToInt(wslayoutopts.at("nstack-no_gaps_when_only")).value_or(0);
     m_workspaceData.no_gaps_when_only = wsngwo;
 
-    static auto* const INHERITFS   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:inherit_fullscreen")->getDataStaticPtr();
-    auto               wsinheritfs = **INHERITFS;
+    auto               wsinheritfs = g_pCfgInheritFullscreen->value();
     if (wslayoutopts.contains("nstack-inherit_fullscreen"))
         wsinheritfs = configStringToInt(wslayoutopts.at("nstack-inherit_fullscreen")).value_or(0);
     m_workspaceData.inherit_fullscreen = wsinheritfs;
 
-    static auto* const CENTERSM   = (Hyprlang::INT* const*)HyprlandAPI::getConfigValue(PHANDLE, "plugin:nstack:layout:center_single_master")->getDataStaticPtr();
-    auto               wscentersm = **CENTERSM;
+    auto               wscentersm = g_pCfgCenterSingleMaster->value();
     if (wslayoutopts.contains("nstack-center_single_master"))
         wscentersm = configStringToInt(wslayoutopts.at("nstack-center_single_master")).value_or(0);
     m_workspaceData.center_single_master = wscentersm;
