@@ -48,7 +48,9 @@ and the whole installed include tree. Need 0.56 replacement (layout/target navig
 2. Patch cluster-by-cluster; rebuild.
 3. Containment: load ONLY into an isolated/nested Hyprland instance (reuse the
    `smart-resize`/hypr-minimize isolated-test pattern, CHG-171/232). Never live first.
-4. Trial: enable on ONE workspace via `layoutopt:nstack-*`, instant rollback.
+4. Trial: stage an immutable, content-addressed `.so`; activate it from Lua
+   config on a **fresh compositor session** for one workspace only, after a
+   nested startup test. Do not promise an instant hot-unload rollback.
 5. Record CHG; register in CMDB; carry in `omarchy-custom` manifest; add a
    rebuild-check because every Hyprland bump breaks the .so.
 
@@ -67,5 +69,36 @@ Fix: register every value with `addConfigValueV2(PHANDLE, SP<Config::Values::IVa
 `->value()`. Versions compile either way — only a runtime/containment test catches this.
 
 Verified by `tests/containment.py` in a nested Hyprland instance (CONTAINMENT_PASS):
-load, register, activate `nStack`, master+stack tiling, `setstackcount 3` -> 3 columns,
+load, register, activate `nstack`, master+stack tiling, `setstackcount 3` -> 3 columns,
 no crash, parent session untouched.
+
+## INCIDENT-146: live update/unload crash and corrected procedure
+
+During the first live trial (CHG-452) an agent ran `cp new.so loaded-path.so` and
+then `hyprctl plugin unload loaded-path.so`. The live compositor crashed inside
+`CPluginSystem::unloadPlugin -> dlsym/ld-linux`. Overwriting the in-use ELF path
+is the leading mechanism; the coredump proves the crash occurred during unload,
+not the precise loader failure. A safe-mode restart also crashed during
+Aquamarine teardown. The trial rule and live plugin were removed; the current
+desktop runs dwindle with no plugin loaded.
+
+**Never replace a loaded plugin file. Never hot-swap versions in the user's
+desktop.** Stage each build at a unique, content-addressed path with
+`python3 scripts/stage_plugin.py nstackLayoutPlugin.so EXISTING_DIRECTORY`.
+The script uses an atomic no-clobber link, verifies SHA-256, and refuses a
+modified file at an existing hash path. A new version is selected in Lua config
+for the *next compositor start*, not by unloading the old one in a live session.
+Before any future live opt-in, run both nested tests:
+
+```
+python3 -m unittest discover -s tests -p 'test_stage_plugin.py'
+python3 tests/containment.py nstackLayoutPlugin.so
+python3 tests/upgrade_nested.py OLD.so NEW.so
+```
+
+`upgrade_nested.py` proves untouched-file unload with mapped windows and then
+starts a second nested compositor from the new immutable path. It asserts a
+fresh workspace 2 uses `nstack` while the global layout stays `dwindle`. It
+does not claim that a hot-loaded plugin will change an already-created
+workspace. See INCIDENT-146 in the shared incident register for impact and
+the recovery evidence. No further live trial is authorised by these tests.

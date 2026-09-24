@@ -37,7 +37,7 @@ APICALL EXPORT PLUGIN_DESCRIPTION_INFO PLUGIN_INIT(HANDLE handle) {
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pCfgMfact);
     HyprlandAPI::addConfigValueV2(PHANDLE, g_pCfgSingleMfact);
     g_pNstackLayout  = std::make_unique<Layout::Tiled::CHyprNstackAlgorithm>();
-	  if (!HyprlandAPI::addTiledAlgo(PHANDLE, "nStack", &typeid(Layout::Tiled::CHyprNstackAlgorithm), [] { return makeUnique<Layout::Tiled::CHyprNstackAlgorithm>(); })) {
+	  if (!HyprlandAPI::addTiledAlgo(PHANDLE, "nstack", &typeid(Layout::Tiled::CHyprNstackAlgorithm), [] { return makeUnique<Layout::Tiled::CHyprNstackAlgorithm>(); })) {
 			HyprlandAPI::addNotification(PHANDLE, "[hyprgollum] addTiledAlgo failed! Can't proceed.", CHyprColor{1.0, 0.2, 0.2, 1.0}, 5000);
     }
     HyprlandAPI::reloadConfig();

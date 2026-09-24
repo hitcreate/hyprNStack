@@ -8,14 +8,18 @@ Modelled on ~/.local/state/hypr-minimize/native-test/test.py.
 
 import json, os, pathlib, subprocess, sys, tempfile, time
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+from scripts.stage_plugin import stage  # noqa: E402
+
 SO = (
     pathlib.Path(sys.argv[1]).resolve()
     if len(sys.argv) > 1
-    else pathlib.Path.home() / "repos/hyprNStack/nstackLayoutPlugin.so"
+    else pathlib.Path(__file__).resolve().parents[1] / "nstackLayoutPlugin.so"
 )
 assert SO.exists(), f"missing plugin: {SO}"
 
 OUT = pathlib.Path(tempfile.mkdtemp(prefix="nstack-containment-"))
+SO = stage(SO, OUT)  # Never load the mutable build output directly.
 LIVE = os.environ["HYPRLAND_INSTANCE_SIGNATURE"]
 env = None
 instance = None
@@ -55,7 +59,7 @@ def wait(fn, secs=20):
     raise AssertionError("condition timed out")
 
 
-config = """hl.config({general={gaps_in=5,gaps_out=10,border_size=2,layout="nStack"},animations={enabled=false},misc={disable_hyprland_logo=true}})
+config = """hl.config({general={gaps_in=5,gaps_out=10,border_size=2,layout="nstack"},animations={enabled=false},misc={disable_hyprland_logo=true}})
 hl.monitor({output="",mode="1280x720@60",position="auto",scale=1})
 """
 (OUT / "config.lua").write_text(config)
@@ -97,12 +101,14 @@ def dsp(code):
 
 def lmsg(arg):
     """layoutmsg via the 0.56 Lua dispatcher. hyprctl wraps the arg in hl.dispatch(...)."""
-    return cmd(
+    result = cmd(
         "hyprctl",
         "dispatch",
         "hl.dsp.layout(" + json.dumps(arg) + ")",
         e=env,
     )
+    assert result[0] == 0 and result[1].strip() == "ok", result
+    return result
 
 
 def clients():
@@ -156,10 +162,10 @@ try:
     ctl2("reload")
     time.sleep(0.5)
     if "nstack" not in ctl2("getoption", "general:layout").lower():
-        ctl2("keyword", "general:layout", "nStack")
+        ctl2("keyword", "general:layout", "nstack")
         time.sleep(0.3)
     print("layout ->", ctl2("getoption", "general:layout").strip(), flush=True)
-    check("layout is nStack", "nstack" in ctl2("getoption", "general:layout").lower())
+    check("layout is nstack", "nstack" in ctl2("getoption", "general:layout").lower())
     check(
         "no config errors",
         ctl2("configerrors").strip() == "",

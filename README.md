@@ -1,4 +1,17 @@
 # hyprNStack
+
+> **Hyprland 0.56 fork / INCIDENT-146:** Do not copy a new `.so` over a path
+> already loaded by Hyprland, then unload it. That sequence crashed the live
+> compositor. Build and stage with
+> `python3 scripts/stage_plugin.py nstackLayoutPlugin.so EXISTING_DIRECTORY`;
+> it gives each binary an immutable, SHA-256-addressed path. Test load and
+> upgrade in disposable nested compositors (`tests/containment.py`,
+> `tests/upgrade_nested.py`) before choosing a new path for the next login.
+> This fork registers the lowercase `nstack` layout. For the Lua config on
+> Hyprland 0.56, use `hl.plugin.load("/absolute/immutable/path.so")` and
+> `hl.workspace_rule({workspace="2", layout="nstack"})`; leave global layout
+> `dwindle`. Do not hot-swap a live plugin or claim an untested rollback.
+
 This plugin is a modified version of Hyprland's Master layout. 
 
 The primary change is that it allows an arbitrary number of non-master 'stacks'. This can be changed dynamically per-workspace.
@@ -50,38 +63,33 @@ Two new-ish orientations
 
 # Installing
 
-## Hyprpm, Hyprland's official plugin manager (recommended)
-1. Run `hyprpm add https://github.com/zakk4223/hyprNStack` and wait for hyprpm to build the plugin.
-2. Run `hyprpm enable hyprNStack`
-3. Set your hyprland layout to `nstack`.
+## Hyprland 0.56 / Omarchy Lua configuration (this fork)
 
-## Manual
-Hyprland plugins basically have to be user-compiled and loaded. You probably need to compile and install hyprland yourself (if not using a package that exports the headers, e.g. the one on Arch's official repos).
- 
-If your package does not export headers, see the [this part of the hyprland wiki](https://wiki.hyprland.org/Plugins/Using-Plugins/#preparing-hyprland-sources-for-plugins)
+Hyprland plugins must match the installed Hyprland version. The upstream
+`hyprpm.toml` pins stop at 0.54; **do not install the upstream repository or
+use its old `cp` + `exec-once` instructions for this 0.56 fork**.
 
-Then:
-
-1. Build hyprNStack
-   - `make`
-2. Copy the resulting nstackLayoutPlugin.so to some place
-   - `cp nstackLayoutPlugin.so ~/.config/hypr/plugins`
-3. Modify your hyprland.conf to load the plugin
-   - `exec-once=hyprctl plugin load $HOME/.config/hypr/plugins/nstackLayoutPlugin.so`
-4. Set your hyprland layout to `nstack`. 
-
-## Plugin-Manager Hyprload
-Installing via [hyprload](https://github.com/Duckonaut/hyprload) is supported.
-
-
-1. Add the following to your `hyprload.toml` once `hyprload` [is running](https://github.com/Duckonaut/hyprload#installing):
-``` toml
-plugins = [
-    "zakk4223/hyprNStack",
-    { local = "https://github.com/zakk4223/hyprNStack", branch = "main", name = "hyprNStack" },
-]
-```
-2. Reload/Update your plugins and set your hyprland layout to `nstack`.
+1. Build against the installed headers: `make all` (check that
+   `pkg-config --modversion hyprland` reports the version you are running).
+2. Create a staging directory, then stage the binary there:
+   ```sh
+   mkdir -p "$HOME/.local/share/hyprNStack/builds"
+   python3 scripts/stage_plugin.py nstackLayoutPlugin.so "$HOME/.local/share/hyprNStack/builds"
+   ```
+   The printed file path contains its SHA-256. A rebuild gets a *different*
+   path; the script refuses to overwrite an existing one.
+3. Run `tests/containment.py` and `tests/upgrade_nested.py` with the versioned
+   binaries in disposable nested Hyprland instances. These tests never load a
+   plugin into the parent compositor.
+4. **Only after a separately approved live trial**, add the printed absolute
+   path to the user's Hyprland Lua config for the *next compositor start*:
+   ```lua
+   hl.plugin.load("/absolute/path/to/nstackLayoutPlugin-<sha256>.so")
+   hl.workspace_rule({ workspace = "2", layout = "nstack" })
+   ```
+   Keep the global layout `dwindle`. A future update means selecting a new
+   immutable path at a later compositor start, not copying over the active
+   path or hot-unloading the running layout.
 
 # TODO
 - [ ] Improve mouse resizing of stacks
